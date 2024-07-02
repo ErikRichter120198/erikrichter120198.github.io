@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gruppen-Video-Chat</title>
+    <style>
+        video {
+            width: 45%;
+            margin: 10px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Gruppen-Video-Chat</h1>
+    <div id="videos"></div>
+
+    <script>
+        const videosContainer = document.getElementById('videos');
+        const constraints = { video: true, audio: true };
+
+        let localStream;
+        let clientId = `client-${Math.random().toString(36).substr(2, 9)}`;
+        const socket = new WebSocket('ws://' + window.location.host);
+
+        socket.onmessage = async (message) => {
+            const parsedMessage = JSON.parse(message.data);
+            if (parsedMessage.type === 'offer') {
+                await handleOffer(parsedMessage);
+            } else if (parsedMessage.type === 'answer') {
+                await handleAnswer(parsedMessage);
+            } else if (parsedMessage.type === 'ice') {
+                await handleIceCandidate(parsedMessage);
+            }
+        };
+
+        socket.onopen = () => {
+            startLocalStream();
+            socket.send(JSON.stringify({ type: 'register', clientId }));
+        };
+
+        async function startLocalStream() {
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia(constraints);
+                const localVideo = document.createElement('video');
+                localVideo.srcObject = localStream;
+                localVideo.autoplay = true;
+                localVideo.muted = true;
+                videosContainer.appendChild(localVideo);
+
+                for (const track of localStream.getTracks()) {
+                    track.onended = () => {
+                        console.log('Track ended');
+                    };
+                }
+            } catch (error) {
+                console.error('Fehler beim Abrufen des Medienstreams:', error);
+            }
+        }
+
+        async function handleOffer(message) {
+            const peerConnection = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+            peerConnections[message.from] = peerConnection;
+
+            const remoteStream = new MediaStream();
+            const remoteVideo = document.createElement('video');
+            remoteVideo.srcObject = remoteStream;
+            remoteVideo.autoplay = true;
+            videosContainer.appendChild(remoteVideo);
+
+            localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+            peerConnection.ontrack = event => {
+                event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
+            };
+
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(message.data));
+            const answer = await peerConnection.createAnswer();
+            await peerConnection.setLocalDescription(answer);
+
+            socket.send(JSON.stringify({
+                type: 'answer',
+                clientId,
+                target: message.from,
+                data: answer
+            }));
+
+            peerConnection.onicecandidate = event => {
+                if (event.candidate) {
+                    socket.send(JSON.stringify({
+                        type: 'ice',
+                        clientId,
+                        target: message.from,
+                        data: event.candidate
+                    }));
+                }
+            };
+        }
+
+        async function handleAnswer(message) {
+            const peerConnection = peerConnections[message.from];
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(message.data));
+        }
+
+        async function handleIceCandidate(message) {
+            const peerConnection = peerConnections[message.from];
+            await peerConnection.addIceCandidate(new RTCIceCandidate(message.data));
+        }
+
+        let peerConnections = {};
+    </script>
+</body>
+</html>
